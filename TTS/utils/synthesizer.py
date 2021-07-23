@@ -194,8 +194,7 @@ class Synthesizer(object):
         speaker_embedding = None
         sens = self.split_into_sentences(text)
         print(" > Text splitted to sentences.")
-        print(sens)
-
+        #print(sens)
         if self.tts_speakers_file:
             # get the speaker embedding from the saved x_vectors.
             if speaker_idx and isinstance(speaker_idx, str):
