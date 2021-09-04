@@ -2,11 +2,13 @@ import math
 
 import numpy as np
 import torch
+from coqpit import Coqpit
 from torch import nn
 from torch.nn import functional
 
-from TTS.tts.utils.generic_utils import sequence_mask
+from TTS.tts.utils.data import sequence_mask
 from TTS.tts.utils.ssim import ssim
+from TTS.utils.audio import TorchSTFT
 
 
 # pylint: disable=abstract-method
@@ -246,9 +248,9 @@ class Huber(nn.Module):
 class TacotronLoss(torch.nn.Module):
     """Collection of Tacotron set-up based on provided config."""
 
-    def __init__(self, c, stopnet_pos_weight=10, ga_sigma=0.4):
+    def __init__(self, c, ga_sigma=0.4):
         super().__init__()
-        self.stopnet_pos_weight = stopnet_pos_weight
+        self.stopnet_pos_weight = c.stopnet_pos_weight
         self.ga_alpha = c.ga_alpha
         self.decoder_diff_spec_alpha = c.decoder_diff_spec_alpha
         self.postnet_diff_spec_alpha = c.postnet_diff_spec_alpha
@@ -274,7 +276,7 @@ class TacotronLoss(torch.nn.Module):
             self.criterion_ssim = SSIMLoss()
         # stopnet loss
         # pylint: disable=not-callable
-        self.criterion_st = BCELossMasked(pos_weight=torch.tensor(stopnet_pos_weight)) if c.stopnet else None
+        self.criterion_st = BCELossMasked(pos_weight=torch.tensor(self.stopnet_pos_weight)) if c.stopnet else None
 
     def forward(
         self,
@@ -284,6 +286,7 @@ class TacotronLoss(torch.nn.Module):
         linear_input,
         stopnet_output,
         stopnet_target,
+        stop_target_length,
         output_lens,
         decoder_b_output,
         alignments,
@@ -315,12 +318,12 @@ class TacotronLoss(torch.nn.Module):
         return_dict["decoder_loss"] = decoder_loss
         return_dict["postnet_loss"] = postnet_loss
 
-        # stopnet loss
         stop_loss = (
-            self.criterion_st(stopnet_output, stopnet_target, output_lens) if self.config.stopnet else torch.zeros(1)
+            self.criterion_st(stopnet_output, stopnet_target, stop_target_length)
+            if self.config.stopnet
+            else torch.zeros(1)
         )
-        if not self.config.separate_stopnet and self.config.stopnet:
-            loss += stop_loss
+        loss += stop_loss
         return_dict["stopnet_loss"] = stop_loss
 
         # backward decoder loss (if enabled)
@@ -462,13 +465,12 @@ class MDNLoss(nn.Module):
 
 class AlignTTSLoss(nn.Module):
     """Modified AlignTTS Loss.
-    Computes following losses
+    Computes
         - L1 and SSIM losses from output spectrograms.
         - Huber loss for duration predictor.
         - MDNLoss for Mixture of Density Network.
 
-    All the losses are aggregated by a weighted sum with the loss alphas.
-    Alphas can be scheduled based on number of steps.
+    All loss values are aggregated by a weighted sum of the alpha values.
 
     Args:
         c (dict): TTS model configuration.
@@ -487,9 +489,9 @@ class AlignTTSLoss(nn.Module):
         self.mdn_alpha = c.mdn_alpha
 
     def forward(
-        self, logp, decoder_output, decoder_target, decoder_output_lens, dur_output, dur_target, input_lens, step, phase
+        self, logp, decoder_output, decoder_target, decoder_output_lens, dur_output, dur_target, input_lens, phase
     ):
-        ssim_alpha, dur_loss_alpha, spec_loss_alpha, mdn_alpha = self.set_alphas(step)
+        # ssim_alpha, dur_loss_alpha, spec_loss_alpha, mdn_alpha = self.set_alphas(step)
         spec_loss, ssim_loss, dur_loss, mdn_loss = 0, 0, 0, 0
         if phase == 0:
             mdn_loss = self.mdn_loss(logp, input_lens, decoder_output_lens)
@@ -507,36 +509,152 @@ class AlignTTSLoss(nn.Module):
             spec_loss = self.spec_loss(decoder_output, decoder_target, decoder_output_lens)
             ssim_loss = self.ssim(decoder_output, decoder_target, decoder_output_lens)
             dur_loss = self.dur_loss(dur_output.unsqueeze(2), dur_target.unsqueeze(2), input_lens)
-        loss = spec_loss_alpha * spec_loss + ssim_alpha * ssim_loss + dur_loss_alpha * dur_loss + mdn_alpha * mdn_loss
+        loss = (
+            self.spec_loss_alpha * spec_loss
+            + self.ssim_alpha * ssim_loss
+            + self.dur_loss_alpha * dur_loss
+            + self.mdn_alpha * mdn_loss
+        )
         return {"loss": loss, "loss_l1": spec_loss, "loss_ssim": ssim_loss, "loss_dur": dur_loss, "mdn_loss": mdn_loss}
 
+
+class VitsGeneratorLoss(nn.Module):
+    def __init__(self, c: Coqpit):
+        super().__init__()
+        self.kl_loss_alpha = c.kl_loss_alpha
+        self.gen_loss_alpha = c.gen_loss_alpha
+        self.feat_loss_alpha = c.feat_loss_alpha
+        self.dur_loss_alpha = c.dur_loss_alpha
+        self.mel_loss_alpha = c.mel_loss_alpha
+        self.stft = TorchSTFT(
+            c.audio.fft_size,
+            c.audio.hop_length,
+            c.audio.win_length,
+            sample_rate=c.audio.sample_rate,
+            mel_fmin=c.audio.mel_fmin,
+            mel_fmax=c.audio.mel_fmax,
+            n_mels=c.audio.num_mels,
+            use_mel=True,
+            do_amp_to_db=True,
+        )
+
     @staticmethod
-    def _set_alpha(step, alpha_settings):
-        """Set the loss alpha wrt number of steps.
-        Return the corresponding value if no schedule is set.
+    def feature_loss(feats_real, feats_generated):
+        loss = 0
+        for dr, dg in zip(feats_real, feats_generated):
+            for rl, gl in zip(dr, dg):
+                rl = rl.float().detach()
+                gl = gl.float()
+                loss += torch.mean(torch.abs(rl - gl))
 
-        Example:
-            Setting a alpha schedule.
-            if ```alpha_settings``` is ```[[0, 1], [10000, 0.1]]```  then ```return_alpha == 1``` until 10k steps, then set to 0.1.
-            if ```alpha_settings``` is a constant value then ```return_alpha``` is set to that constant.
+        return loss * 2
 
-        Args:
-            step (int): number of training steps.
-            alpha_settings (int or list): constant alpha value or a list defining the schedule as explained above.
+    @staticmethod
+    def generator_loss(scores_fake):
+        loss = 0
+        gen_losses = []
+        for dg in scores_fake:
+            dg = dg.float()
+            l = torch.mean((1 - dg) ** 2)
+            gen_losses.append(l)
+            loss += l
+
+        return loss, gen_losses
+
+    @staticmethod
+    def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
         """
-        return_alpha = None
-        if isinstance(alpha_settings, list):
-            for key, alpha in alpha_settings:
-                if key < step:
-                    return_alpha = alpha
-        elif isinstance(alpha_settings, (float, int)):
-            return_alpha = alpha_settings
-        return return_alpha
+        z_p, logs_q: [b, h, t_t]
+        m_p, logs_p: [b, h, t_t]
+        """
+        z_p = z_p.float()
+        logs_q = logs_q.float()
+        m_p = m_p.float()
+        logs_p = logs_p.float()
+        z_mask = z_mask.float()
 
-    def set_alphas(self, step):
-        """Set the alpha values for all the loss functions"""
-        ssim_alpha = self._set_alpha(step, self.ssim_alpha)
-        dur_loss_alpha = self._set_alpha(step, self.dur_loss_alpha)
-        spec_loss_alpha = self._set_alpha(step, self.spec_loss_alpha)
-        mdn_alpha = self._set_alpha(step, self.mdn_alpha)
-        return ssim_alpha, dur_loss_alpha, spec_loss_alpha, mdn_alpha
+        kl = logs_p - logs_q - 0.5
+        kl += 0.5 * ((z_p - m_p) ** 2) * torch.exp(-2.0 * logs_p)
+        kl = torch.sum(kl * z_mask)
+        l = kl / torch.sum(z_mask)
+        return l
+
+    def forward(
+        self,
+        waveform,
+        waveform_hat,
+        z_p,
+        logs_q,
+        m_p,
+        logs_p,
+        z_len,
+        scores_disc_fake,
+        feats_disc_fake,
+        feats_disc_real,
+        loss_duration,
+    ):
+        """
+        Shapes:
+            - waveform : :math:`[B, 1, T]`
+            - waveform_hat: :math:`[B, 1, T]`
+            - z_p: :math:`[B, C, T]`
+            - logs_q: :math:`[B, C, T]`
+            - m_p: :math:`[B, C, T]`
+            - logs_p: :math:`[B, C, T]`
+            - z_len: :math:`[B]`
+            - scores_disc_fake[i]: :math:`[B, C]`
+            - feats_disc_fake[i][j]: :math:`[B, C, T', P]`
+            - feats_disc_real[i][j]: :math:`[B, C, T', P]`
+        """
+        loss = 0.0
+        return_dict = {}
+        z_mask = sequence_mask(z_len).float()
+        # compute mel spectrograms from the waveforms
+        mel = self.stft(waveform)
+        mel_hat = self.stft(waveform_hat)
+        # compute losses
+        loss_feat = self.feature_loss(feats_disc_fake, feats_disc_real) * self.feat_loss_alpha
+        loss_gen = self.generator_loss(scores_disc_fake)[0] * self.gen_loss_alpha
+        loss_kl = self.kl_loss(z_p, logs_q, m_p, logs_p, z_mask.unsqueeze(1)) * self.kl_loss_alpha
+        loss_mel = torch.nn.functional.l1_loss(mel, mel_hat) * self.mel_loss_alpha
+        loss_duration = torch.sum(loss_duration.float()) * self.dur_loss_alpha
+        loss = loss_kl + loss_feat + loss_mel + loss_gen + loss_duration
+        # pass losses to the dict
+        return_dict["loss_gen"] = loss_gen
+        return_dict["loss_kl"] = loss_kl
+        return_dict["loss_feat"] = loss_feat
+        return_dict["loss_mel"] = loss_mel
+        return_dict["loss_duration"] = loss_duration
+        return_dict["loss"] = loss
+        return return_dict
+
+
+class VitsDiscriminatorLoss(nn.Module):
+    def __init__(self, c: Coqpit):
+        super().__init__()
+        self.disc_loss_alpha = c.disc_loss_alpha
+
+    @staticmethod
+    def discriminator_loss(scores_real, scores_fake):
+        loss = 0
+        real_losses = []
+        fake_losses = []
+        for dr, dg in zip(scores_real, scores_fake):
+            dr = dr.float()
+            dg = dg.float()
+            real_loss = torch.mean((1 - dr) ** 2)
+            fake_loss = torch.mean(dg ** 2)
+            loss += real_loss + fake_loss
+            real_losses.append(real_loss.item())
+            fake_losses.append(fake_loss.item())
+
+        return loss, real_losses, fake_losses
+
+    def forward(self, scores_disc_real, scores_disc_fake):
+        loss = 0.0
+        return_dict = {}
+        loss_disc, _, _ = self.discriminator_loss(scores_disc_real, scores_disc_fake)
+        return_dict["loss_disc"] = loss_disc * self.disc_loss_alpha
+        loss = loss + return_dict["loss_disc"]
+        return_dict["loss"] = loss
+        return return_dict
