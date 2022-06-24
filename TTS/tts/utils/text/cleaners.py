@@ -4,6 +4,7 @@
 import re
 
 from anyascii import anyascii
+from unicodedata import normalize
 
 from TTS.tts.utils.text.chinese_mandarin.numbers import replace_numbers_to_characters_in_text
 
@@ -38,6 +39,10 @@ def convert_to_ascii(text):
     return anyascii(text)
 
 
+def nfd(text):
+    return normalize('NFD', text)
+
+
 def remove_aux_symbols(text):
     text = re.sub(r"[\<\>\(\)\[\]\"]+", "", text)
     return text
@@ -53,6 +58,8 @@ def replace_symbols(text, lang="en"):
         text = text.replace("&", " et ")
     elif lang == "pt":
         text = text.replace("&", " e ")
+    elif lang == "kr":
+        text = text.replace("&", " 앤 ")
     return text
 
 
@@ -133,6 +140,15 @@ def portuguese_cleaners(text):
 def chinese_mandarin_cleaners(text: str) -> str:
     """Basic pipeline for chinese"""
     text = replace_numbers_to_characters_in_text(text)
+    return text
+
+
+def korean_cleaners(text):
+    text = lowercase(text)
+    text = replace_symbols(text, lang="kr")
+    text = remove_aux_symbols(text)
+    text = collapse_whitespace(text)
+    text = nfd(text)
     return text
 
 
