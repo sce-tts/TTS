@@ -200,9 +200,6 @@ class BaseTTSConfig(BaseTrainingConfig):
         loss_masking (bool):
             enable / disable masking loss values against padded segments of samples in a batch.
 
-        sort_by_audio_len (bool):
-            If true, dataloder sorts the data by audio length else sorts by the input text length. Defaults to `False`.
-
         min_text_len (int):
             Minimum length of input text to be used. All shorter samples will be ignored. Defaults to 0.
 
@@ -220,6 +217,9 @@ class BaseTTSConfig(BaseTrainingConfig):
         compute_f0 (int):
             (Not in use yet).
 
+        compute_energy (int):
+            (Not in use yet).
+
         compute_linear_spec (bool):
             If True data loader computes and returns linear spectrograms alongside the other data.
 
@@ -232,6 +232,13 @@ class BaseTTSConfig(BaseTrainingConfig):
         start_by_longest (bool):
             If True, the data loader will start loading the longest batch first. It is useful for checking OOM issues.
             Defaults to False.
+
+        shuffle (bool):
+            If True, the data loader will shuffle the dataset when there is not sampler defined. Defaults to True.
+
+        drop_last (bool):
+            If True, the data loader will drop the last batch if it is not complete. It helps to prevent
+            issues that emerge from the partial batch statistics. Defaults to True.
 
         add_blank (bool):
             Add blank characters between each other two characters. It improves performance for some models at expense
@@ -303,23 +310,25 @@ class BaseTTSConfig(BaseTrainingConfig):
     batch_group_size: int = 0
     loss_masking: bool = None
     # dataloading
-    sort_by_audio_len: bool = False
     min_audio_len: int = 1
     max_audio_len: int = float("inf")
     min_text_len: int = 1
     max_text_len: int = float("inf")
     compute_f0: bool = False
+    compute_energy: bool = False
     compute_linear_spec: bool = False
     precompute_num_workers: int = 0
     use_noise_augment: bool = False
     start_by_longest: bool = False
+    shuffle: bool = False
+    drop_last: bool = False
     # dataset
     datasets: List[BaseDatasetConfig] = field(default_factory=lambda: [BaseDatasetConfig()])
     # optimizer
     optimizer: str = "radam"
     optimizer_params: dict = None
     # scheduler
-    lr_scheduler: str = ""
+    lr_scheduler: str = None
     lr_scheduler_params: dict = field(default_factory=lambda: {})
     # testing
     test_sentences: List[str] = field(default_factory=lambda: [])

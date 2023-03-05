@@ -24,7 +24,7 @@ c.data_path = os.path.join(get_tests_data_path(), "ljspeech/")
 ok_ljspeech = os.path.exists(c.data_path)
 
 dataset_config = BaseDatasetConfig(
-    name="ljspeech_test",  # ljspeech_test to multi-speaker
+    formatter="ljspeech_test",  # ljspeech_test to multi-speaker
     meta_file_train="metadata.csv",
     meta_file_val=None,
     path=c.data_path,
@@ -45,7 +45,6 @@ class TestTTSDataset(unittest.TestCase):
         self.ap = AudioProcessor(**c.audio)
 
     def _create_dataloader(self, batch_size, r, bgs, start_by_longest=False):
-
         # load dataset
         meta_data_train, meta_data_eval = load_tts_samples(dataset_config, eval_split=True, eval_split_size=0.2)
         items = meta_data_train + meta_data_eval

@@ -233,6 +233,7 @@ class Wavernn(BaseVocoder):
         else:
             raise RuntimeError("Unknown model mode value - ", self.args.mode)
 
+        self.ap = AudioProcessor(**config.audio.to_dict())
         self.aux_dims = self.args.res_out_dims // 4
 
         if self.args.use_upsample_net:
@@ -311,7 +312,6 @@ class Wavernn(BaseVocoder):
         return self.fc3(x)
 
     def inference(self, mels, batched=None, target=None, overlap=None):
-
         self.eval()
         output = []
         start = time.time()
@@ -345,7 +345,6 @@ class Wavernn(BaseVocoder):
                 aux_split = [aux[:, :, d * i : d * (i + 1)] for i in range(4)]
 
             for i in range(seq_len):
-
                 m_t = mels[:, i, :]
 
                 if self.args.use_aux_net:
@@ -541,9 +540,9 @@ class Wavernn(BaseVocoder):
         return unfolded
 
     def load_checkpoint(
-        self, config, checkpoint_path, eval=False
+        self, config, checkpoint_path, eval=False, cache=False
     ):  # pylint: disable=unused-argument, redefined-builtin
-        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"), cache=cache)
         self.load_state_dict(state["model"])
         if eval:
             self.eval()
@@ -571,7 +570,7 @@ class Wavernn(BaseVocoder):
     def test(
         self, assets: Dict, test_loader: "DataLoader", output: Dict  # pylint: disable=unused-argument
     ) -> Tuple[Dict, Dict]:
-        ap = assets["audio_processor"]
+        ap = self.ap
         figures = {}
         audios = {}
         samples = test_loader.dataset.load_test_samples(1)
@@ -587,7 +586,15 @@ class Wavernn(BaseVocoder):
                 }
             )
             audios.update({f"test_{idx}/audio": y_hat})
+            # audios.update({f"real_{idx}/audio": y_hat})
         return figures, audios
+
+    def test_log(
+        self, outputs: Dict, logger: "Logger", assets: Dict, steps: int  # pylint: disable=unused-argument
+    ) -> Tuple[Dict, np.ndarray]:
+        figures, audios = outputs
+        logger.eval_figures(steps, figures)
+        logger.eval_audios(steps, audios, self.ap.sample_rate)
 
     @staticmethod
     def format_batch(batch: Dict) -> Dict:
@@ -605,7 +612,7 @@ class Wavernn(BaseVocoder):
         verbose: bool,
         num_gpus: int,
     ):
-        ap = assets["audio_processor"]
+        ap = self.ap
         dataset = WaveRNNDataset(
             ap=ap,
             items=samples,

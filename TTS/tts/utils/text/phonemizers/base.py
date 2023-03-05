@@ -32,7 +32,6 @@ class BasePhonemizer(abc.ABC):
     """
 
     def __init__(self, language, punctuations=Punctuation.default_puncs(), keep_puncs=False):
-
         # ensure the backend is installed on the system
         if not self.is_available():
             raise RuntimeError("{} not installed on your system".format(self.name()))  # pragma: nocover
@@ -114,7 +113,7 @@ class BasePhonemizer(abc.ABC):
             return self._punctuator.restore(phonemized, punctuations)[0]
         return phonemized[0]
 
-    def phonemize(self, text: str, separator="|") -> str:
+    def phonemize(self, text: str, separator="|", language: str = None) -> str:  # pylint: disable=unused-argument
         """Returns the `text` phonemized for the given language
 
         Args:

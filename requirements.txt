@@ -1,17 +1,20 @@
 # core deps
-numpy==1.21.6
+numpy==1.21.6;python_version<"3.10"
+numpy;python_version=="3.10"
 cython==0.29.28
 scipy>=1.4.0
 torch>=1.7
 torchaudio
 soundfile
 librosa==0.8.0
-numba==0.55.1
-inflect
+numba==0.55.1;python_version<"3.10"
+numba==0.55.2;python_version=="3.10"
+inflect==5.6.0
 tqdm
 anyascii
 pyyaml
 fsspec>=2021.04.0
+packaging
 # deps for examples
 flask
 # deps for inference
@@ -21,9 +24,8 @@ umap-learn==0.5.1
 pandas
 # deps for training
 matplotlib
-pyworld==0.2.10 # > 0.2.10 is not p3.10.x compatible
 # coqui stack
-trainer
+trainer==0.0.20
 # config management
 coqpit>=0.0.16
 # chinese g2p deps
@@ -33,4 +35,8 @@ pypinyin
 mecab-python3==1.0.5
 unidic-lite==1.0.8
 # gruut+supported langs
-gruut[cs,de,es,fr,it,nl,pt,ru,sv]==2.2.3
+gruut[de]==2.2.3
+# deps for korean
+jamo
+nltk
+g2pkk>=0.1.1

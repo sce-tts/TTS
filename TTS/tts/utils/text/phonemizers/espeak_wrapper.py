@@ -1,6 +1,9 @@
 import logging
+import re
 import subprocess
 from typing import Dict, List
+
+from packaging.version import Version
 
 from TTS.tts.utils.text.phonemizers.base import BasePhonemizer
 from TTS.tts.utils.text.punctuation import Punctuation
@@ -12,13 +15,33 @@ def is_tool(name):
     return which(name) is not None
 
 
+# Use a regex pattern to match the espeak version, because it may be
+# symlinked to espeak-ng, which moves the version bits to another spot.
+espeak_version_pattern = re.compile(r"text-to-speech:\s(?P<version>\d+\.\d+(\.\d+)?)")
+
+
+def get_espeak_version():
+    output = subprocess.getoutput("espeak --version")
+    match = espeak_version_pattern.search(output)
+
+    return match.group("version")
+
+
+def get_espeakng_version():
+    output = subprocess.getoutput("espeak-ng --version")
+    return output.split()[3]
+
+
 # priority: espeakng > espeak
 if is_tool("espeak-ng"):
     _DEF_ESPEAK_LIB = "espeak-ng"
+    _DEF_ESPEAK_VER = get_espeakng_version()
 elif is_tool("espeak"):
     _DEF_ESPEAK_LIB = "espeak"
+    _DEF_ESPEAK_VER = get_espeak_version()
 else:
     _DEF_ESPEAK_LIB = None
+    _DEF_ESPEAK_VER = None
 
 
 def _espeak_exe(espeak_lib: str, args: List, sync=False) -> List[str]:
@@ -84,6 +107,7 @@ class ESpeak(BasePhonemizer):
     """
 
     _ESPEAK_LIB = _DEF_ESPEAK_LIB
+    _ESPEAK_VER = _DEF_ESPEAK_VER
 
     def __init__(self, language: str, backend=None, punctuations=Punctuation.default_puncs(), keep_puncs=True):
         if self._ESPEAK_LIB is None:
@@ -93,6 +117,8 @@ class ESpeak(BasePhonemizer):
         # band-aid for backwards compatibility
         if language == "en":
             language = "en-us"
+        if language == "zh-cn":
+            language = "cmn"
 
         super().__init__(language, punctuations=punctuations, keep_puncs=keep_puncs)
         if backend is not None:
@@ -102,17 +128,24 @@ class ESpeak(BasePhonemizer):
     def backend(self):
         return self._ESPEAK_LIB
 
+    @property
+    def backend_version(self):
+        return self._ESPEAK_VER
+
     @backend.setter
     def backend(self, backend):
         if backend not in ["espeak", "espeak-ng"]:
             raise Exception("Unknown backend: %s" % backend)
         self._ESPEAK_LIB = backend
+        self._ESPEAK_VER = get_espeakng_version() if backend == "espeak-ng" else get_espeak_version()
 
     def auto_set_espeak_lib(self) -> None:
         if is_tool("espeak-ng"):
             self._ESPEAK_LIB = "espeak-ng"
+            self._ESPEAK_VER = get_espeakng_version()
         elif is_tool("espeak"):
             self._ESPEAK_LIB = "espeak"
+            self._ESPEAK_VER = get_espeak_version()
         else:
             raise Exception("Cannot set backend automatically. espeak-ng or espeak not found")
 
@@ -143,7 +176,10 @@ class ESpeak(BasePhonemizer):
         else:
             # split with '_'
             if self.backend == "espeak":
-                args.append("--ipa=3")
+                if Version(self.backend_version) >= Version("1.48.15"):
+                    args.append("--ipa=1")
+                else:
+                    args.append("--ipa=3")
             else:
                 args.append("--ipa=1")
         if tie:
@@ -163,6 +199,13 @@ class ESpeak(BasePhonemizer):
 
             # dealing with the conditions descrived above
             ph_decoded = ph_decoded[:1].replace("_", "") + ph_decoded[1:]
+
+            # espeak-ng backend can add language flags that need to be removed:
+            #   "sɛʁtˈɛ̃ mˈo kɔm (en)fˈʊtbɔːl(fr) ʒenˈɛʁ de- flˈaɡ də- lˈɑ̃ɡ."
+            # phonemize needs to remove the language flags of the returned text:
+            #   "sɛʁtˈɛ̃ mˈo kɔm fˈʊtbɔːl ʒenˈɛʁ de- flˈaɡ də- lˈɑ̃ɡ."
+            ph_decoded = re.sub(r"\(.+?\)", "", ph_decoded)
+
             phonemes += ph_decoded.strip()
         return phonemes.replace("_", separator)
 

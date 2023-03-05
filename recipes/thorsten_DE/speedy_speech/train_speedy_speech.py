@@ -12,7 +12,7 @@ from TTS.utils.downloaders import download_thorsten_de
 
 output_path = os.path.dirname(os.path.abspath(__file__))
 dataset_config = BaseDatasetConfig(
-    name="thorsten", meta_file_train="metadata.csv", path=os.path.join(output_path, "../thorsten-de/")
+    formatter="thorsten", meta_file_train="metadata.csv", path=os.path.join(output_path, "../thorsten-de/")
 )
 
 # download dataset if not already present
@@ -60,7 +60,6 @@ config = SpeedySpeechConfig(
         "Dieser Kuchen ist großartig. Er ist so lecker und feucht.",
         "Vor dem 22. November 1963.",
     ],
-    sort_by_audio_len=True,
     max_seq_len=500000,
     output_path=output_path,
     datasets=[dataset_config],

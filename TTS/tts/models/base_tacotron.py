@@ -92,16 +92,17 @@ class BaseTacotron(BaseTTS):
         pass
 
     def load_checkpoint(
-        self, config, checkpoint_path, eval=False
+        self, config, checkpoint_path, eval=False, cache=False
     ):  # pylint: disable=unused-argument, redefined-builtin
         """Load model checkpoint and set up internals.
 
         Args:
             config (Coqpi): model configuration.
             checkpoint_path (str): path to checkpoint file.
-            eval (bool): whether to load model for evaluation.
+            eval (bool, optional): whether to load model for evaluation.
+            cache (bool, optional): If True, cache the file locally for subsequent calls. It is cached under `get_user_data_dir()/tts_cache`. Defaults to False.
         """
-        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"), cache=cache)
         self.load_state_dict(state["model"])
         # TODO: set r in run-time by taking it from the new config
         if "r" in state:
@@ -251,7 +252,12 @@ class BaseTacotron(BaseTTS):
 
     def compute_capacitron_VAE_embedding(self, inputs, reference_mel_info, text_info=None, speaker_embedding=None):
         """Capacitron Variational Autoencoder"""
-        (VAE_outputs, posterior_distribution, prior_distribution, capacitron_beta,) = self.capacitron_vae_layer(
+        (
+            VAE_outputs,
+            posterior_distribution,
+            prior_distribution,
+            capacitron_beta,
+        ) = self.capacitron_vae_layer(
             reference_mel_info,
             text_info,
             speaker_embedding,  # pylint: disable=not-callable

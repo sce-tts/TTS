@@ -2,8 +2,8 @@ import argparse
 import glob
 import os
 from argparse import RawTextHelpFormatter
-from distutils.dir_util import copy_tree
 from multiprocessing import Pool
+from shutil import copytree
 
 import librosa
 import soundfile as sf
@@ -16,8 +16,25 @@ def resample_file(func_args):
     sf.write(filename, y, sr)
 
 
-if __name__ == "__main__":
+def resample_files(input_dir, output_sr, output_dir=None, file_ext="wav", n_jobs=10):
+    if output_dir:
+        print("Recursively copying the input folder...")
+        copytree(input_dir, output_dir)
+        input_dir = output_dir
 
+    print("Resampling the audio files...")
+    audio_files = glob.glob(os.path.join(input_dir, f"**/*.{file_ext}"), recursive=True)
+    print(f"Found {len(audio_files)} files...")
+    audio_files = list(zip(audio_files, len(audio_files) * [output_sr]))
+    with Pool(processes=n_jobs) as p:
+        with tqdm(total=len(audio_files)) as pbar:
+            for _, _ in enumerate(p.imap_unordered(resample_file, audio_files)):
+                pbar.update()
+
+    print("Done !")
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""Resample a folder recusively with librosa
                        Can be used in place or create a copy of the folder as an output.\n\n
@@ -70,18 +87,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.output_dir:
-        print("Recursively copying the input folder...")
-        copy_tree(args.input_dir, args.output_dir)
-        args.input_dir = args.output_dir
-
-    print("Resampling the audio files...")
-    audio_files = glob.glob(os.path.join(args.input_dir, f"**/*.{args.file_ext}"), recursive=True)
-    print(f"Found {len(audio_files)} files...")
-    audio_files = list(zip(audio_files, len(audio_files) * [args.output_sr]))
-    with Pool(processes=args.n_jobs) as p:
-        with tqdm(total=len(audio_files)) as pbar:
-            for i, _ in enumerate(p.imap_unordered(resample_file, audio_files)):
-                pbar.update()
-
-    print("Done !")
+    resample_files(args.input_dir, args.output_sr, args.output_dir, args.file_ext, args.n_jobs)

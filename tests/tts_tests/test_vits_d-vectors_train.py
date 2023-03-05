@@ -33,7 +33,7 @@ config.audio.trim_db = 60
 
 # active multispeaker d-vec mode
 config.model_args.use_d_vector_file = True
-config.model_args.d_vector_file = "tests/data/ljspeech/speakers.json"
+config.model_args.d_vector_file = ["tests/data/ljspeech/speakers.json"]
 config.model_args.d_vector_dim = 256
 
 
@@ -43,7 +43,7 @@ config.save_json(config_path)
 command_train = (
     f"CUDA_VISIBLE_DEVICES='{get_device_id()}' python TTS/bin/train_tts.py --config_path {config_path} "
     f"--coqpit.output_path {output_path} "
-    "--coqpit.datasets.0.name ljspeech "
+    "--coqpit.datasets.0.formatter ljspeech "
     "--coqpit.datasets.0.meta_file_train metadata.csv "
     "--coqpit.datasets.0.meta_file_val metadata.csv "
     "--coqpit.datasets.0.path tests/data/ljspeech "

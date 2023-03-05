@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from itertools import chain
 from typing import Dict, List, Tuple, Union
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torchaudio
@@ -13,6 +14,8 @@ from torch import nn
 from torch.cuda.amp.autocast_mode import autocast
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from torch.utils.data.sampler import WeightedRandomSampler
+from trainer.torch import DistributedSampler, DistributedSamplerWrapper
 from trainer.trainer_utils import get_optimizer, get_scheduler
 
 from TTS.tts.configs.shared_configs import CharactersConfig
@@ -29,6 +32,8 @@ from TTS.tts.utils.synthesis import synthesis
 from TTS.tts.utils.text.characters import BaseCharacters, _characters, _pad, _phonemes, _punctuations
 from TTS.tts.utils.text.tokenizer import TTSTokenizer
 from TTS.tts.utils.visual import plot_alignment
+from TTS.utils.io import load_fsspec
+from TTS.utils.samplers import BucketBatchSampler
 from TTS.vocoder.models.hifigan_generator import HifiganGenerator
 from TTS.vocoder.utils.generic_utils import plot_results
 
@@ -200,9 +205,49 @@ def wav_to_mel(y, n_fft, num_mels, sample_rate, hop_length, win_length, fmin, fm
     return spec
 
 
+#############################
+# CONFIGS
+#############################
+
+
+@dataclass
+class VitsAudioConfig(Coqpit):
+    fft_size: int = 1024
+    sample_rate: int = 22050
+    win_length: int = 1024
+    hop_length: int = 256
+    num_mels: int = 80
+    mel_fmin: int = 0
+    mel_fmax: int = None
+
+
 ##############################
 # DATASET
 ##############################
+
+
+def get_attribute_balancer_weights(items: list, attr_name: str, multi_dict: dict = None):
+    """Create inverse frequency weights for balancing the dataset.
+    Use `multi_dict` to scale relative weights."""
+    attr_names_samples = np.array([item[attr_name] for item in items])
+    unique_attr_names = np.unique(attr_names_samples).tolist()
+    attr_idx = [unique_attr_names.index(l) for l in attr_names_samples]
+    attr_count = np.array([len(np.where(attr_names_samples == l)[0]) for l in unique_attr_names])
+    weight_attr = 1.0 / attr_count
+    dataset_samples_weight = np.array([weight_attr[l] for l in attr_idx])
+    dataset_samples_weight = dataset_samples_weight / np.linalg.norm(dataset_samples_weight)
+    if multi_dict is not None:
+        # check if all keys are in the multi_dict
+        for k in multi_dict:
+            assert k in unique_attr_names, f"{k} not in {unique_attr_names}"
+        # scale weights
+        multiplier_samples = np.array([multi_dict.get(item[attr_name], 1.0) for item in items])
+        dataset_samples_weight *= multiplier_samples
+    return (
+        torch.from_numpy(dataset_samples_weight).float(),
+        unique_attr_names,
+        np.unique(dataset_samples_weight).tolist(),
+    )
 
 
 class VitsDataset(TTSDataset):
@@ -239,6 +284,7 @@ class VitsDataset(TTSDataset):
             "wav_file": wav_filename,
             "speaker_name": item["speaker_name"],
             "language_name": item["language"],
+            "audio_unique_name": item["audio_unique_name"],
         }
 
     @property
@@ -263,6 +309,7 @@ class VitsDataset(TTSDataset):
             - language_names: :math:`[B]`
             - audiofile_paths: :math:`[B]`
             - raw_texts: :math:`[B]`
+            - audio_unique_names: :math:`[B]`
         """
         # convert list of dicts to dict of lists
         B = len(batch)
@@ -303,6 +350,7 @@ class VitsDataset(TTSDataset):
             "language_names": batch["language_name"],
             "audio_files": batch["wav_file"],
             "raw_text": batch["raw_text"],
+            "audio_unique_names": batch["audio_unique_name"],
         }
 
 
@@ -429,8 +477,8 @@ class VitsArgs(Coqpit):
         use_d_vector_file (bool):
             Enable/Disable the use of d-vectors for multi-speaker training. Defaults to False.
 
-        d_vector_file (str):
-            Path to the file including pre-computed speaker embeddings. Defaults to None.
+        d_vector_file (List[str]):
+            List of paths to the files including pre-computed speaker embeddings. Defaults to None.
 
         d_vector_dim (int):
             Number of d-vector channels. Defaults to 0.
@@ -525,7 +573,7 @@ class VitsArgs(Coqpit):
     use_speaker_embedding: bool = False
     num_speakers: int = 0
     speakers_file: str = None
-    d_vector_file: str = None
+    d_vector_file: List[str] = None
     speaker_embedding_channels: int = 256
     use_d_vector_file: bool = False
     d_vector_dim: int = 0
@@ -585,7 +633,6 @@ class Vits(BaseTTS):
         speaker_manager: SpeakerManager = None,
         language_manager: LanguageManager = None,
     ):
-
         super().__init__(config, ap, tokenizer, speaker_manager, language_manager)
 
         self.init_multispeaker(config)
@@ -673,6 +720,10 @@ class Vits(BaseTTS):
                 use_spectral_norm=self.args.use_spectral_norm_disriminator,
             )
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     def init_multispeaker(self, config: Coqpit):
         """Initialize multi-speaker modules of a model. A model can be trained either with a speaker embedding layer
         or with external `d_vectors` computed from a speaker encoder model.
@@ -710,17 +761,12 @@ class Vits(BaseTTS):
 
             if (
                 hasattr(self.speaker_manager.encoder, "audio_config")
-                and self.config.audio["sample_rate"] != self.speaker_manager.encoder.audio_config["sample_rate"]
+                and self.config.audio.sample_rate != self.speaker_manager.encoder.audio_config["sample_rate"]
             ):
                 self.audio_transform = torchaudio.transforms.Resample(
-                    orig_freq=self.audio_config["sample_rate"],
+                    orig_freq=self.config.audio.sample_rate,
                     new_freq=self.speaker_manager.encoder.audio_config["sample_rate"],
                 )
-            # pylint: disable=W0101,W0105
-            self.audio_transform = torchaudio.transforms.Resample(
-                orig_freq=self.config.audio.sample_rate,
-                new_freq=self.speaker_manager.encoder.audio_config["sample_rate"],
-            )
 
     def _init_speaker_embedding(self):
         # pylint: disable=attribute-defined-outside-init
@@ -763,6 +809,13 @@ class Vits(BaseTTS):
                 orig_freq=self.config.audio["sample_rate"], new_freq=self.args.encoder_sample_rate
             )  # pylint: disable=W0201
 
+    def on_epoch_start(self, trainer):  # pylint: disable=W0613
+        """Freeze layers at the beginning of an epoch"""
+        self._freeze_layers()
+        # set the device of speaker encoder
+        if self.args.use_speaker_encoder_as_loss:
+            self.speaker_manager.encoder = self.speaker_manager.encoder.to(self.device)
+
     def on_init_end(self, trainer):  # pylint: disable=W0613
         """Reinit layes if needed"""
         if self.args.reinit_DP:
@@ -786,7 +839,7 @@ class Vits(BaseTTS):
             print(" > Text Encoder was reinit.")
 
     def get_aux_input(self, aux_input: Dict):
-        sid, g, lid = self._set_cond_input(aux_input)
+        sid, g, lid, _ = self._set_cond_input(aux_input)
         return {"speaker_ids": sid, "style_wav": None, "d_vectors": g, "language_ids": lid}
 
     def _freeze_layers(self):
@@ -817,7 +870,7 @@ class Vits(BaseTTS):
     @staticmethod
     def _set_cond_input(aux_input: Dict):
         """Set the speaker conditioning input based on the multi-speaker mode."""
-        sid, g, lid = None, None, None
+        sid, g, lid, durations = None, None, None, None
         if "speaker_ids" in aux_input and aux_input["speaker_ids"] is not None:
             sid = aux_input["speaker_ids"]
             if sid.ndim == 0:
@@ -832,7 +885,10 @@ class Vits(BaseTTS):
             if lid.ndim == 0:
                 lid = lid.unsqueeze_(0)
 
-        return sid, g, lid
+        if "durations" in aux_input and aux_input["durations"] is not None:
+            durations = aux_input["durations"]
+
+        return sid, g, lid, durations
 
     def _set_speaker_input(self, aux_input: Dict):
         d_vectors = aux_input.get("d_vectors", None)
@@ -946,7 +1002,7 @@ class Vits(BaseTTS):
             - syn_spk_emb: :math:`[B, 1, speaker_encoder.proj_dim]`
         """
         outputs = {}
-        sid, g, lid = self._set_cond_input(aux_input)
+        sid, g, lid, _ = self._set_cond_input(aux_input)
         # speaker embedding
         if self.args.use_speaker_embedding and sid is not None:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
@@ -1028,7 +1084,9 @@ class Vits(BaseTTS):
 
     @torch.no_grad()
     def inference(
-        self, x, aux_input={"x_lengths": None, "d_vectors": None, "speaker_ids": None, "language_ids": None}
+        self,
+        x,
+        aux_input={"x_lengths": None, "d_vectors": None, "speaker_ids": None, "language_ids": None, "durations": None},
     ):  # pylint: disable=dangerous-default-value
         """
         Note:
@@ -1048,7 +1106,7 @@ class Vits(BaseTTS):
             - m_p: :math:`[B, C, T_dec]`
             - logs_p: :math:`[B, C, T_dec]`
         """
-        sid, g, lid = self._set_cond_input(aux_input)
+        sid, g, lid, durations = self._set_cond_input(aux_input)
         x_lengths = self._set_x_lengths(x, aux_input)
 
         # speaker embedding
@@ -1062,21 +1120,25 @@ class Vits(BaseTTS):
 
         x, m_p, logs_p, x_mask = self.text_encoder(x, x_lengths, lang_emb=lang_emb)
 
-        if self.args.use_sdp:
-            logw = self.duration_predictor(
-                x,
-                x_mask,
-                g=g if self.args.condition_dp_on_speaker else None,
-                reverse=True,
-                noise_scale=self.inference_noise_scale_dp,
-                lang_emb=lang_emb,
-            )
+        if durations is None:
+            if self.args.use_sdp:
+                logw = self.duration_predictor(
+                    x,
+                    x_mask,
+                    g=g if self.args.condition_dp_on_speaker else None,
+                    reverse=True,
+                    noise_scale=self.inference_noise_scale_dp,
+                    lang_emb=lang_emb,
+                )
+            else:
+                logw = self.duration_predictor(
+                    x, x_mask, g=g if self.args.condition_dp_on_speaker else None, lang_emb=lang_emb
+                )
+            w = torch.exp(logw) * x_mask * self.length_scale
         else:
-            logw = self.duration_predictor(
-                x, x_mask, g=g if self.args.condition_dp_on_speaker else None, lang_emb=lang_emb
-            )
+            assert durations.shape[-1] == x.shape[-1]
+            w = durations.unsqueeze(0)
 
-        w = torch.exp(logw) * x_mask * self.length_scale
         w_ceil = torch.ceil(w)
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
         y_mask = sequence_mask(y_lengths, None).to(x_mask.dtype).unsqueeze(1)  # [B, 1, T_dec]
@@ -1131,7 +1193,6 @@ class Vits(BaseTTS):
         y_lengths = torch.tensor([y.size(-1)]).to(y.device)
         speaker_cond_src = reference_speaker_id if reference_speaker_id is not None else reference_d_vector
         speaker_cond_tgt = speaker_id if speaker_id is not None else d_vector
-        # print(y.shape, y_lengths.shape)
         wav, _, _ = self.voice_conversion(y, y_lengths, speaker_cond_src, speaker_cond_tgt)
         return wav
 
@@ -1149,8 +1210,8 @@ class Vits(BaseTTS):
         assert self.num_speakers > 0, "num_speakers have to be larger than 0."
         # speaker embedding
         if self.args.use_speaker_embedding and not self.args.use_d_vector_file:
-            g_src = self.emb_g(speaker_cond_src).unsqueeze(-1)
-            g_tgt = self.emb_g(speaker_cond_tgt).unsqueeze(-1)
+            g_src = self.emb_g(torch.from_numpy((np.array(speaker_cond_src))).unsqueeze(0)).unsqueeze(-1)
+            g_tgt = self.emb_g(torch.from_numpy((np.array(speaker_cond_tgt))).unsqueeze(0)).unsqueeze(-1)
         elif not self.args.use_speaker_embedding and self.args.use_d_vector_file:
             g_src = F.normalize(speaker_cond_src).unsqueeze(-1)
             g_tgt = F.normalize(speaker_cond_tgt).unsqueeze(-1)
@@ -1174,8 +1235,6 @@ class Vits(BaseTTS):
         Returns:
             Tuple[Dict, Dict]: Model ouputs and computed losses.
         """
-
-        self._freeze_layers()
 
         spec_lens = batch["spec_lens"]
 
@@ -1220,7 +1279,6 @@ class Vits(BaseTTS):
 
             # compute melspec segment
             with autocast(enabled=False):
-
                 if self.args.encoder_sample_rate:
                     spec_segment_size = self.spec_segment_size * int(self.interpolate_factor)
                 else:
@@ -1341,18 +1399,18 @@ class Vits(BaseTTS):
         if hasattr(self, "speaker_manager"):
             if config.use_d_vector_file:
                 if speaker_name is None:
-                    d_vector = self.speaker_manager.get_random_embeddings()
+                    d_vector = self.speaker_manager.get_random_embedding()
                 else:
                     d_vector = self.speaker_manager.get_mean_embedding(speaker_name, num_samples=None, randomize=False)
             elif config.use_speaker_embedding:
                 if speaker_name is None:
                     speaker_id = self.speaker_manager.get_random_id()
                 else:
-                    speaker_id = self.speaker_manager.ids[speaker_name]
+                    speaker_id = self.speaker_manager.name_to_id[speaker_name]
 
         # get language id
         if hasattr(self, "language_manager") and config.use_language_embedding and language_name is not None:
-            language_id = self.language_manager.ids[language_name]
+            language_id = self.language_manager.name_to_id[language_name]
 
         return {
             "text": text,
@@ -1407,8 +1465,8 @@ class Vits(BaseTTS):
         d_vectors = None
 
         # get numerical speaker ids from speaker names
-        if self.speaker_manager is not None and self.speaker_manager.ids and self.args.use_speaker_embedding:
-            speaker_ids = [self.speaker_manager.ids[sn] for sn in batch["speaker_names"]]
+        if self.speaker_manager is not None and self.speaker_manager.name_to_id and self.args.use_speaker_embedding:
+            speaker_ids = [self.speaker_manager.name_to_id[sn] for sn in batch["speaker_names"]]
 
         if speaker_ids is not None:
             speaker_ids = torch.LongTensor(speaker_ids)
@@ -1417,12 +1475,12 @@ class Vits(BaseTTS):
         # get d_vectors from audio file names
         if self.speaker_manager is not None and self.speaker_manager.embeddings and self.args.use_d_vector_file:
             d_vector_mapping = self.speaker_manager.embeddings
-            d_vectors = [d_vector_mapping[w]["embedding"] for w in batch["audio_files"]]
+            d_vectors = [d_vector_mapping[w]["embedding"] for w in batch["audio_unique_names"]]
             d_vectors = torch.FloatTensor(d_vectors)
 
         # get language ids from language names
-        if self.language_manager is not None and self.language_manager.ids and self.args.use_language_embedding:
-            language_ids = [self.language_manager.ids[ln] for ln in batch["language_names"]]
+        if self.language_manager is not None and self.language_manager.name_to_id and self.args.use_language_embedding:
+            language_ids = [self.language_manager.name_to_id[ln] for ln in batch["language_names"]]
 
         if language_ids is not None:
             language_ids = torch.LongTensor(language_ids)
@@ -1485,6 +1543,42 @@ class Vits(BaseTTS):
         batch["mel"] = batch["mel"] * sequence_mask(batch["mel_lens"]).unsqueeze(1)
         return batch
 
+    def get_sampler(self, config: Coqpit, dataset: TTSDataset, num_gpus=1, is_eval=False):
+        weights = None
+        data_items = dataset.samples
+        if getattr(config, "use_weighted_sampler", False):
+            for attr_name, alpha in config.weighted_sampler_attrs.items():
+                print(f" > Using weighted sampler for attribute '{attr_name}' with alpha '{alpha}'")
+                multi_dict = config.weighted_sampler_multipliers.get(attr_name, None)
+                print(multi_dict)
+                weights, attr_names, attr_weights = get_attribute_balancer_weights(
+                    attr_name=attr_name, items=data_items, multi_dict=multi_dict
+                )
+                weights = weights * alpha
+                print(f" > Attribute weights for '{attr_names}' \n | > {attr_weights}")
+
+        # input_audio_lenghts = [os.path.getsize(x["audio_file"]) for x in data_items]
+
+        if weights is not None:
+            w_sampler = WeightedRandomSampler(weights, len(weights))
+            batch_sampler = BucketBatchSampler(
+                w_sampler,
+                data=data_items,
+                batch_size=config.eval_batch_size if is_eval else config.batch_size,
+                sort_key=lambda x: os.path.getsize(x["audio_file"]),
+                drop_last=True,
+            )
+        else:
+            batch_sampler = None
+        # sampler for DDP
+        if batch_sampler is None:
+            batch_sampler = DistributedSampler(dataset) if num_gpus > 1 else None
+        else:  # If a sampler is already defined use this sampler and DDP sampler together
+            batch_sampler = (
+                DistributedSamplerWrapper(batch_sampler) if num_gpus > 1 else batch_sampler
+            )  # TODO: check batch_sampler with multi-gpu
+        return batch_sampler
+
     def get_data_loader(
         self,
         config: Coqpit,
@@ -1523,17 +1617,24 @@ class Vits(BaseTTS):
 
             # get samplers
             sampler = self.get_sampler(config, dataset, num_gpus)
-
-            loader = DataLoader(
-                dataset,
-                batch_size=config.eval_batch_size if is_eval else config.batch_size,
-                shuffle=False,  # shuffle is done in the dataset.
-                drop_last=False,  # setting this False might cause issues in AMP training.
-                sampler=sampler,
-                collate_fn=dataset.collate_fn,
-                num_workers=config.num_eval_loader_workers if is_eval else config.num_loader_workers,
-                pin_memory=False,
-            )
+            if sampler is None:
+                loader = DataLoader(
+                    dataset,
+                    batch_size=config.eval_batch_size if is_eval else config.batch_size,
+                    shuffle=False,  # shuffle is done in the dataset.
+                    collate_fn=dataset.collate_fn,
+                    drop_last=False,  # setting this False might cause issues in AMP training.
+                    num_workers=config.num_eval_loader_workers if is_eval else config.num_loader_workers,
+                    pin_memory=False,
+                )
+            else:
+                loader = DataLoader(
+                    dataset,
+                    batch_sampler=sampler,
+                    collate_fn=dataset.collate_fn,
+                    num_workers=config.num_eval_loader_workers if is_eval else config.num_loader_workers,
+                    pin_memory=False,
+                )
         return loader
 
     def get_optimizer(self) -> List:
@@ -1568,8 +1669,8 @@ class Vits(BaseTTS):
         Returns:
             List: Schedulers, one for each optimizer.
         """
-        scheduler_G = get_scheduler(self.config.lr_scheduler_gen, self.config.lr_scheduler_gen_params, optimizer[0])
-        scheduler_D = get_scheduler(self.config.lr_scheduler_disc, self.config.lr_scheduler_disc_params, optimizer[1])
+        scheduler_D = get_scheduler(self.config.lr_scheduler_disc, self.config.lr_scheduler_disc_params, optimizer[0])
+        scheduler_G = get_scheduler(self.config.lr_scheduler_gen, self.config.lr_scheduler_gen_params, optimizer[1])
         return [scheduler_D, scheduler_G]
 
     def get_criterion(self):
@@ -1583,14 +1684,10 @@ class Vits(BaseTTS):
         return [VitsDiscriminatorLoss(self.config), VitsGeneratorLoss(self.config)]
 
     def load_checkpoint(
-        self,
-        config,
-        checkpoint_path,
-        eval=False,
-        strict=True,
+        self, config, checkpoint_path, eval=False, strict=True, cache=False
     ):  # pylint: disable=unused-argument, redefined-builtin
         """Load the model checkpoint and setup for training or inference"""
-        state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"), cache=cache)
         # compat band-aid for the pre-trained models to not use the encoder baked into the model
         # TODO: consider baking the speaker encoder into the model and call it from there.
         # as it is probably easier for model distribution.

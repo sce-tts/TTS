@@ -16,7 +16,7 @@ data_path = "/srv/data/"
 
 # Using LJSpeech like dataset processing for the blizzard dataset
 dataset_config = BaseDatasetConfig(
-    name="ljspeech",
+    formatter="ljspeech",
     meta_file_train="metadata.csv",
     path=data_path,
 )
@@ -68,7 +68,6 @@ config = Tacotron2Config(
     print_step=25,
     print_eval=True,
     mixed_precision=False,
-    sort_by_audio_len=True,
     seq_len_norm=True,
     output_path=output_path,
     datasets=[dataset_config],

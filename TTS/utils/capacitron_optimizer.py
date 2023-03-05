@@ -34,11 +34,13 @@ class CapacitronOptimizer:
         self.primary_optimizer.zero_grad()
 
     def step(self):
+        # Update param groups to display the correct learning rate
+        self.param_groups = self.primary_optimizer.param_groups
         self.primary_optimizer.step()
 
-    def zero_grad(self):
-        self.primary_optimizer.zero_grad()
-        self.secondary_optimizer.zero_grad()
+    def zero_grad(self, set_to_none=False):
+        self.primary_optimizer.zero_grad(set_to_none)
+        self.secondary_optimizer.zero_grad(set_to_none)
 
     def load_state_dict(self, state_dict):
         self.primary_optimizer.load_state_dict(state_dict[0])

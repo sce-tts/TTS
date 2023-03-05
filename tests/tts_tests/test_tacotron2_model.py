@@ -301,7 +301,7 @@ class TacotronCapacitronTrainTest(unittest.TestCase):
         batch["stop_targets"] = (batch["stop_targets"].sum(2) > 0.0).unsqueeze(2).float().squeeze()
 
         model = Tacotron2(config).to(device)
-        criterion = model.get_criterion()
+        criterion = model.get_criterion().to(device)
         optimizer = model.get_optimizer()
 
         model.train()
@@ -332,7 +332,6 @@ class SCGSTMultiSpeakeTacotronTrainTest(unittest.TestCase):
 
     @staticmethod
     def test_train_step():
-
         config = config_global.copy()
         config.use_d_vector_file = True
 

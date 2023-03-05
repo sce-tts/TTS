@@ -175,9 +175,15 @@ def synthesis(
         style_mel = compute_style_mel(style_wav, model.ap, cuda=use_cuda)
         style_mel = style_mel.transpose(1, 2)  # [1, time, depth]
 
+    language_name = None
+    if language_id is not None:
+        language = [k for k, v in model.language_manager.name_to_id.items() if v == language_id]
+        assert len(language) == 1, "language_id must be a valid language"
+        language_name = language[0]
+
     # convert text to sequence of token IDs
     text_inputs = np.asarray(
-        model.tokenizer.text_to_ids(text, language=language_id),
+        model.tokenizer.text_to_ids(text, language=language_name),
         dtype=np.int32,
     )
     # pass tensors to backend
@@ -295,7 +301,12 @@ def transfer_voice(
         reference_d_vector = embedding_to_torch(reference_d_vector, cuda=use_cuda)
 
     # load reference_wav audio
-    reference_wav = embedding_to_torch(model.ap.load_wav(reference_wav, sr=model.ap.sample_rate), cuda=use_cuda)
+    reference_wav = embedding_to_torch(
+        model.ap.load_wav(
+            reference_wav, sr=model.args.encoder_sample_rate if model.args.encoder_sample_rate else model.ap.sample_rate
+        ),
+        cuda=use_cuda,
+    )
 
     if hasattr(model, "module"):
         _func = model.module.inference_voice_conversion

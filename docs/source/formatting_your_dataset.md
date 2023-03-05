@@ -88,7 +88,7 @@ from TTS.tts.datasets import load_tts_samples
 
 # dataset config for one of the pre-defined datasets
 dataset_config = BaseDatasetConfig(
-    name="vctk", meta_file_train="", language="en-us", path="dataset-path")
+    formatter="vctk", meta_file_train="", language="en-us", path="dataset-path")
 )
 
 # load training samples
@@ -113,7 +113,7 @@ def formatter(root_path, manifest_file, **kwargs):  # pylint: disable=unused-arg
             cols = line.split("|")
             wav_file = os.path.join(root_path, "wavs", cols[0])
             text = cols[1]
-            items.append({"text":text, "audio_file":wav_file, "speaker_name":speaker_name})
+            items.append({"text":text, "audio_file":wav_file, "speaker_name":speaker_name, "root_path": root_path})
     return items
 
 # load training samples

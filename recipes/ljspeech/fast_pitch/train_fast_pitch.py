@@ -14,7 +14,7 @@ output_path = os.path.dirname(os.path.abspath(__file__))
 
 # init configs
 dataset_config = BaseDatasetConfig(
-    name="ljspeech",
+    formatter="ljspeech",
     meta_file_train="metadata.csv",
     # meta_file_attn_mask=os.path.join(output_path, "../LJSpeech-1.1/metadata_attn_mask.txt"),
     path=os.path.join(output_path, "../LJSpeech-1.1/"),
@@ -54,7 +54,6 @@ config = FastPitchConfig(
     print_step=50,
     print_eval=False,
     mixed_precision=False,
-    sort_by_audio_len=True,
     max_seq_len=500000,
     output_path=output_path,
     datasets=[dataset_config],

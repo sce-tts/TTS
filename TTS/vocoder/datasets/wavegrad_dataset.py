@@ -30,7 +30,6 @@ class WaveGradDataset(Dataset):
         use_cache=False,
         verbose=False,
     ):
-
         super().__init__()
         self.ap = ap
         self.item_list = items
@@ -149,4 +148,4 @@ class WaveGradDataset(Dataset):
             mels[idx, :, : mel.shape[1]] = mel
             audios[idx, : audio.shape[0]] = audio
 
-        return audios, mels
+        return mels, audios

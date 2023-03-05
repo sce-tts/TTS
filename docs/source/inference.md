@@ -11,6 +11,7 @@ After the installation, 2 terminal commands are available.
 
 1. TTS Command Line Interface (CLI). - `tts`
 2. Local Demo Server. - `tts-server`
+3. In 🐍Python. - `from TTS.api import TTS`
 
 ## On the Commandline - `tts`
 ![cli.gif](https://github.com/coqui-ai/TTS/raw/main/images/tts_cli.gif)
@@ -99,5 +100,39 @@ tts-server --model_name "<type>/<language>/<dataset>/<model_name>" \
            --vocoder_name "<type>/<language>/<dataset>/<model_name>"
 ```
 
-## TorchHub
-You can also use [this simple colab notebook](https://colab.research.google.com/drive/1iAe7ZdxjUIuN6V4ooaCt0fACEGKEn7HW?usp=sharing) using TorchHub to synthesize speech.
+## Python API
+
+You can run a multi-speaker and multi-lingual model in Python as
+
+```python
+from TTS.api import TTS
+
+# List available 🐸TTS models and choose the first one
+model_name = TTS.list_models()[0]
+# Init TTS
+tts = TTS(model_name)
+# Run TTS
+# ❗ Since this model is multi-speaker and multi-lingual, we must set the target speaker and the language
+# Text to speech with a numpy output
+wav = tts.tts("This is a test! This is also a test!!", speaker=tts.speakers[0], language=tts.languages[0])
+# Text to speech to a file
+tts.tts_to_file(text="Hello world!", speaker=tts.speakers[0], language=tts.languages[0], file_path="output.wav")
+```
+
+Here is an example for a single speaker model.
+
+```python
+# Init TTS with the target model name
+tts = TTS(model_name="tts_models/de/thorsten/tacotron2-DDC", progress_bar=False, gpu=False)
+# Run TTS
+tts.tts_to_file(text="Ich bin eine Testnachricht.", file_path=OUTPUT_PATH)
+```
+
+Example voice cloning with YourTTS in English, French and Portuguese:
+
+```python
+tts = TTS(model_name="tts_models/multilingual/multi-dataset/your_tts", progress_bar=False, gpu=True)
+tts.tts_to_file("This is voice cloning.", speaker_wav="my/cloning/audio.wav", language="en", file_path="output.wav")
+tts.tts_to_file("C'est le clonage de la voix.", speaker_wav="my/cloning/audio.wav", language="fr", file_path="output.wav")
+tts.tts_to_file("Isso é clonagem de voz.", speaker_wav="my/cloning/audio.wav", language="pt", file_path="output.wav")
+```

@@ -14,7 +14,7 @@ output_path = os.path.join(get_tests_output_path(), "train_outputs")
 
 
 dataset_config_en = BaseDatasetConfig(
-    name="ljspeech_test",
+    formatter="ljspeech_test",
     meta_file_train="metadata.csv",
     meta_file_val="metadata.csv",
     path="tests/data/ljspeech",
@@ -22,7 +22,7 @@ dataset_config_en = BaseDatasetConfig(
 )
 
 dataset_config_pt = BaseDatasetConfig(
-    name="ljspeech_test",
+    formatter="ljspeech_test",
     meta_file_train="metadata.csv",
     meta_file_val="metadata.csv",
     path="tests/data/ljspeech",
@@ -63,8 +63,8 @@ config.use_speaker_embedding = False
 # active multispeaker d-vec mode
 config.model_args.use_d_vector_file = True
 config.use_d_vector_file = True
-config.model_args.d_vector_file = "tests/data/ljspeech/speakers.json"
-config.d_vector_file = "tests/data/ljspeech/speakers.json"
+config.model_args.d_vector_file = ["tests/data/ljspeech/speakers.json"]
+config.d_vector_file = ["tests/data/ljspeech/speakers.json"]
 config.model_args.d_vector_dim = 256
 config.d_vector_dim = 256
 

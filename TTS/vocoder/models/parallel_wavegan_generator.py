@@ -33,7 +33,6 @@ class ParallelWaveganGenerator(torch.nn.Module):
         upsample_factors=[4, 4, 4, 4],
         inference_padding=2,
     ):
-
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -153,9 +152,9 @@ class ParallelWaveganGenerator(torch.nn.Module):
         return self._get_receptive_field_size(self.layers, self.stacks, self.kernel_size)
 
     def load_checkpoint(
-        self, config, checkpoint_path, eval=False
+        self, config, checkpoint_path, eval=False, cache=False
     ):  # pylint: disable=unused-argument, redefined-builtin
-        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"), cache=cache)
         self.load_state_dict(state["model"])
         if eval:
             self.eval()

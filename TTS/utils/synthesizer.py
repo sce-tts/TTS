@@ -62,7 +62,6 @@ class Synthesizer(object):
         self.tts_model = None
         self.vocoder_model = None
         self.speaker_manager = None
-        self.num_speakers = 0
         self.tts_speakers = {}
         self.language_manager = None
         self.num_languages = 0
@@ -188,7 +187,7 @@ class Synthesizer(object):
             text (str): input text.
             speaker_name (str, optional): spekaer id for multi-speaker models. Defaults to "".
             language_name (str, optional): language id for multi-language models. Defaults to "".
-            speaker_wav (Union[str, List[str]], optional): path to the speaker wav. Defaults to None.
+            speaker_wav (Union[str, List[str]], optional): path to the speaker wav for voice cloning. Defaults to None.
             style_wav ([type], optional): style waveform for GST. Defaults to None.
             style_text ([type], optional): transcription of style_wav for Capacitron. Defaults to None.
             reference_wav ([type], optional): reference waveform for voice conversion. Defaults to None.
@@ -212,8 +211,12 @@ class Synthesizer(object):
         # handle multi-speaker
         speaker_embedding = None
         speaker_id = None
-        if self.tts_speakers_file or hasattr(self.tts_model.speaker_manager, "ids"):
-            if speaker_name and isinstance(speaker_name, str):
+        if self.tts_speakers_file or hasattr(self.tts_model.speaker_manager, "name_to_id"):
+            # handle Neon models with single speaker.
+            if len(self.tts_model.speaker_manager.name_to_id) == 1:
+                speaker_id = list(self.tts_model.speaker_manager.name_to_id.values())[0]
+
+            elif speaker_name and isinstance(speaker_name, str):
                 if self.tts_config.use_d_vector_file:
                     # get the average speaker embedding from the saved d_vectors.
                     speaker_embedding = self.tts_model.speaker_manager.get_mean_embedding(
@@ -222,7 +225,7 @@ class Synthesizer(object):
                     speaker_embedding = np.array(speaker_embedding)[None, :]  # [1 x embedding_dim]
                 else:
                     # get speaker idx from the speaker name
-                    speaker_id = self.tts_model.speaker_manager.ids[speaker_name]
+                    speaker_id = self.tts_model.speaker_manager.name_to_id[speaker_name]
 
             elif not speaker_name and not speaker_wav:
                 raise ValueError(
@@ -238,13 +241,16 @@ class Synthesizer(object):
                     "Define path for speaker.json if it is a multi-speaker model or remove defined speaker idx. "
                 )
 
-        # handle multi-lingaul
+        # handle multi-lingual
         language_id = None
         if self.tts_languages_file or (
             hasattr(self.tts_model, "language_manager") and self.tts_model.language_manager is not None
         ):
-            if language_name and isinstance(language_name, str):
-                language_id = self.tts_model.language_manager.ids[language_name]
+            if len(self.tts_model.language_manager.name_to_id) == 1:
+                language_id = list(self.tts_model.language_manager.name_to_id.values())[0]
+
+            elif language_name and isinstance(language_name, str):
+                language_id = self.tts_model.language_manager.name_to_id[language_name]
 
             elif not language_name:
                 raise ValueError(
@@ -307,7 +313,7 @@ class Synthesizer(object):
                 waveform = waveform.squeeze()
 
                 # trim silence
-                if self.tts_config.audio["do_trim_silence"] is True:
+                if "do_trim_silence" in self.tts_config.audio and self.tts_config.audio["do_trim_silence"]:
                     waveform = trim_silence(waveform, self.tts_model.ap)
 
                 wavs += list(waveform)
@@ -316,7 +322,7 @@ class Synthesizer(object):
             # get the speaker embedding or speaker id for the reference wav file
             reference_speaker_embedding = None
             reference_speaker_id = None
-            if self.tts_speakers_file or hasattr(self.tts_model.speaker_manager, "ids"):
+            if self.tts_speakers_file or hasattr(self.tts_model.speaker_manager, "name_to_id"):
                 if reference_speaker_name and isinstance(reference_speaker_name, str):
                     if self.tts_config.use_d_vector_file:
                         # get the speaker embedding from the saved d_vectors.
@@ -328,12 +334,11 @@ class Synthesizer(object):
                         ]  # [1 x embedding_dim]
                     else:
                         # get speaker idx from the speaker name
-                        reference_speaker_id = self.tts_model.speaker_manager.ids[reference_speaker_name]
+                        reference_speaker_id = self.tts_model.speaker_manager.name_to_id[reference_speaker_name]
                 else:
                     reference_speaker_embedding = self.tts_model.speaker_manager.compute_embedding_from_clip(
                         reference_wav
                     )
-
             outputs = transfer_voice(
                 model=self.tts_model,
                 CONFIG=self.tts_config,
