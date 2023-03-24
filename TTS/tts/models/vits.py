@@ -130,6 +130,7 @@ def wav_to_spec(y, n_fft, hop_length, win_length, center=False):
         pad_mode="reflect",
         normalized=False,
         onesided=True,
+        return_complex=False,
     )
 
     spec = torch.sqrt(spec.pow(2).sum(-1) + 1e-6)
@@ -197,6 +198,7 @@ def wav_to_mel(y, n_fft, num_mels, sample_rate, hop_length, win_length, fmin, fm
         pad_mode="reflect",
         normalized=False,
         onesided=True,
+        return_complex=False,
     )
 
     spec = torch.sqrt(spec.pow(2).sum(-1) + 1e-6)
@@ -1628,13 +1630,23 @@ class Vits(BaseTTS):
                     pin_memory=False,
                 )
             else:
-                loader = DataLoader(
-                    dataset,
-                    batch_sampler=sampler,
-                    collate_fn=dataset.collate_fn,
-                    num_workers=config.num_eval_loader_workers if is_eval else config.num_loader_workers,
-                    pin_memory=False,
-                )
+                if num_gpus > 1:
+                    loader = DataLoader(
+                        dataset,
+                        sampler=sampler,
+                        batch_size=config.eval_batch_size if is_eval else config.batch_size,
+                        collate_fn=dataset.collate_fn,
+                        num_workers=config.num_eval_loader_workers if is_eval else config.num_loader_workers,
+                        pin_memory=False,
+                    )
+                else:
+                    loader = DataLoader(
+                        dataset,
+                        batch_sampler=sampler,
+                        collate_fn=dataset.collate_fn,
+                        num_workers=config.num_eval_loader_workers if is_eval else config.num_loader_workers,
+                        pin_memory=False,
+                    )
         return loader
 
     def get_optimizer(self) -> List:
