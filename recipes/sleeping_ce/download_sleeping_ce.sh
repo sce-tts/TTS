@@ -1,6 +1,6 @@
 # create venv
-python -m venv env
-source env/Scripts/activate
+python3 -m venv env
+source .env/bin/activate
 pip install pip --upgrade
 
 # download dataset

@@ -2,40 +2,32 @@ import os
 
 from trainer import Trainer, TrainerArgs
 
-from TTS.config.shared_configs import BaseAudioConfig
-from TTS.tts.configs.shared_configs import BaseDatasetConfig
+from TTS.tts.configs.shared_configs import BaseDatasetConfig, CharactersConfig
 from TTS.tts.configs.vits_config import VitsConfig
 from TTS.tts.datasets import load_tts_samples
-from TTS.tts.models.vits import CharactersConfig, Vits
+from TTS.tts.models.vits import Vits, VitsAudioConfig
 from TTS.tts.utils.text.tokenizer import TTSTokenizer
 from TTS.utils.audio import AudioProcessor
 
 output_path = os.path.dirname(os.path.abspath(__file__))
 dataset_config = BaseDatasetConfig(
-    name="sleeping_ce", meta_file_train="metadata.csv", path=os.path.join(output_path, "../filelists")
+    formatter="sleeping_ce", meta_file_train="metadata.csv", path=os.path.join(output_path, "../filelists")
 )
-audio_config = BaseAudioConfig(
+
+audio_config = VitsAudioConfig(
     sample_rate=22050,
     win_length=1024,
     hop_length=256,
     num_mels=80,
-    preemphasis=0.98,
-    ref_level_db=20,
-    log_func="np.log",
-    do_trim_silence=True,
-    trim_db=60,
     mel_fmin=0,
     mel_fmax=8000,
-    spec_gain=20,
-    signal_norm=False,
-    do_amp_to_db_linear=False,
 )
 
 config = VitsConfig(
     audio=audio_config,
     run_name="vits_sleeping_ce",
-    batch_size=16,
-    eval_batch_size=16,
+    batch_size=32,
+    eval_batch_size=32,
     batch_group_size=5,
     num_loader_workers=0,
     num_eval_loader_workers=4,

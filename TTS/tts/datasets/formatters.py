@@ -612,5 +612,5 @@ def sleeping_ce(root_path, meta_file, **kwargs):  # pylint: disable=unused-argum
             cols = line.split("|")
             wav_file = os.path.join(root_path, "wavs", cols[0] + ".wav")
             text = cols[1]
-            items.append({"text": text, "audio_file": wav_file, "speaker_name": speaker_name})
+            items.append({"text": text, "audio_file": wav_file, "speaker_name": speaker_name, "root_path": root_path})
     return items
