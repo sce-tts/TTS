@@ -12,6 +12,7 @@ from .english.abbreviations import abbreviations_en
 from .english.number_norm import normalize_numbers as en_normalize_numbers
 from .english.time_norm import expand_time_english
 from .french.abbreviations import abbreviations_fr
+from .korean.phonemizer import korean_text_to_phonemes
 
 # Regular expression matching whitespace:
 _whitespace_re = re.compile(r"\s+")
@@ -169,6 +170,15 @@ def korean_cleaners(text):
     text = remove_aux_symbols(text)
     text = collapse_whitespace(text)
     text = nfd(text)
+    return text
+
+
+def korean_g2p_cleaners(text):
+    text = lowercase(text)
+    text = replace_symbols(text, lang="kr")
+    text = remove_aux_symbols(text)
+    text = collapse_whitespace(text)
+    text = korean_text_to_phonemes(text)
     return text
 
 
